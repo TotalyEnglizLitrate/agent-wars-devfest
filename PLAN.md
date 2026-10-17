@@ -162,8 +162,28 @@ POST /scenario/{name}                        # load demo scenario: act1 | act2 |
 
 One `LlmAgent` with Gemini. Each tool is a plain Python function with type hints and a docstring; ADK builds the tool schema from those. Each function calls the World API over httpx or calls a solver directly.
 
-**Tools:**
-`get_events`, `get_orders`, `get_inventory`, `get_price_history`, `run_procurement_optimizer`, `run_reallocation_optimizer`, `create_purchase_order`, `cancel_purchase_order`, `reassign_shipment`, `request_reschedule`, `reconcile`, `check_ledger_invariants`, `escalate_to_human`, `advance_clock`.
+**Tools → what each one calls.** The World API is built and tested, so these are real endpoints:
+
+| Agent tool | Calls | Notes |
+|---|---|---|
+| `get_events` | `GET /events?since=<day>` | Each event has a messy `message` (for the LLM) plus a structured `payload` |
+| `get_orders` | `GET /orders?status=open` | |
+| `get_inventory` | `GET /inventory` | |
+| `get_price_history` | `GET /suppliers`, `GET /suppliers/{id}/prices?days=90` | Never returns future days |
+| `get_allocation_state` | `GET /allocation-state` | Remaining demand, every truck's reachable days per customer, warehouse stock, and an `issues` list. **Feed this to the reallocation solver** |
+| `run_procurement_optimizer` | `tools/procurement.py` (B) | Pass learned reliability from §7.1 |
+| `run_reallocation_optimizer` | `tools/reallocation.py` (B) | Input is `/allocation-state` |
+| `create_purchase_order` | `POST /purchase-orders {supplier_id, qty_t}` | The price is always that day's supplier price; the caller can't set it |
+| `cancel_purchase_order` | `POST /purchase-orders/{id}/cancel` | 409 once the PO has shipped |
+| `dispatch_from_warehouse` | `POST /shipments {truck_id, stops}` | Free truck + warehouse stock |
+| `reassign_shipment` | `POST /shipments/{id}/reassign {stops, truck_id?}` | Can't carry more than is on board; leftover goes back to the warehouse; stop day must be after today |
+| `request_reschedule` | `POST /customers/{id}/reschedule-request {order_id, new_day, discount_pct}` | `discount_pct` is 0–50. Act 2's Factory B counters at 5% first |
+| `reconcile` | `POST /reconcile` | Returns `actions`, `followups` (what to do next), `net_spend`, `invariants` |
+| `check_ledger_invariants` | `GET /ledger/invariants` | `{ok, violations[]}` |
+| `escalate_to_human` | local | |
+| `advance_clock` | `POST /clock/advance {days}` | `days` is 1–30 |
+| `get_scorecard` | `GET /scorecard` | Same yardstick as the FCFS baseline |
+| `recall_lessons`, `save_lesson` | `agent/memory.py` | See §7.1 |
 
 **Loop (described in the system prompt; `run_demo.py` drives one tick per act):**
 ```
@@ -188,6 +208,23 @@ for each tick:
 
 **Fallback if the LLM is flaky during the demo:** `run_demo.py --scripted` calls the same tools in a fixed order, so the solver and ledger story still works.
 
+### 7.1 Learning loop: the agent gets better across runs (Person C)
+
+Within one run the agent already gets feedback: counters force a re-solve, `reconcile` reports what's off, and `/scorecard` grades the run. What's missing is carry-over between runs. Add a small **lessons memory**:
+
+- **File:** `agent/memory.py`. It stores to `.agent_memory/lessons.json` (gitignored), which survives restarts and scenario reloads.
+- **After each act, `record_run(act)`** reads `/scorecard`, `/events`, `/purchase-orders` and `/negotiations`, then derives lessons **in code, not with the LLM**, so the numbers are always correct:
+  - **Supplier reliability seen in practice:** count API POs vs `short_ship` events per supplier, summed across runs. Blend with the listed figure: `(on_time + 5 × listed) / (n + 5)`. Pass it to `run_procurement_optimizer` as a `reliability_override: dict[str, float]` (**B: accept this argument**).
+  - **Customer haggling:** each customer's last counter discount, e.g. "C2 countered a delay at 5%: offer 5% up front." This saves a negotiation round.
+  - **From the scorecard:** wasted tonnes ("re-route in-transit loads after a `buyer_cancel`; follow `reconcile`'s followups"), and late deliveries if `on_time_rate` < 95%.
+  - **Run history:** act, total cost, wasted tonnes, e.g. "last act1 run cost ₹49.4L: beat it".
+  - Key each lesson by (kind, subject) so it's **updated, not duplicated**. Put at most 10 in the prompt.
+- **`save_lesson(text)` tool:** the agent can add its own free-text lessons (plain text, max 20 kept).
+- **Prompt injection:** pass a function as the instruction: `LlmAgent(instruction=build_instruction)`, where `def build_instruction(ctx: ReadonlyContext) -> str: return BASE_PROMPT + lessons_block()`. *Checked against the installed google-adk:* `instruction` accepts a sync or async callable taking `ReadonlyContext`. A callable skips ADK's `{state}` templating, so don't put `{var}` placeholders in `BASE_PROMPT`.
+- **Guardrails:** lessons are advice only and never override §7 guardrails. Run `rm -rf .agent_memory` before a clean demo.
+- **Test:** make `extract_lessons(report) -> list[Lesson]` a pure function and unit-test it with the World `TestClient`, the same way `tests/test_baseline.py` does.
+- **Demo moment:** wipe memory, run act 1 twice. Run 1 buys mostly from cheap S1 and gets short-shipped. Run 2's prompt shows "S1 observed reliability 0.44", the purchase split shifts toward other suppliers, and the scorecard cost drops. Show the lessons block on screen.
+
 ---
 
 ## 8. Demo script (≈5 min, three acts)
@@ -196,29 +233,33 @@ for each tick:
 2. **Day 2: shortage (showpiece).** A supplier short-ships. The solver proposes diverting truck 2 and delaying Factory B. The agent asks, B **counters** with a discount, the agent re-solves with the new constraint, confirms, and commits.
 3. **Day 3: cancellation.** A customer cancels. The agent reconciles the ledger, reallocates surplus to a waiting order, cancels an unshipped upstream PO, and shows the net cost impact.
 
-**Closing slide:** one number. **Fulfillment rate and total cost compared with the FCFS baseline** on the same seeded data.
+**Closing slide:** **total ₹ cost and wasted tonnes compared with the FCFS baseline** on the same seeded data, from `GET /scorecard`, plus **run 2 vs run 1 cost** from §7.1.
+
+> Fulfillment rate is not the headline: FCFS already hits 100% in every act, because S1's 1-day lead time lets it re-buy after each miss. Baseline today (`uv run python -m agent_wars_devfest.tools.baseline`): act1 ₹49.4L, act2 ₹32.5L, act3 ₹26.9L with **25t wasted** on the cancelled order.
 
 ---
 
 ## 9. Team split (3 people, all start at 12:35)
 
-### Person A: World
+### Person A: World ✅ done (all tested, `uv run pytest`)
 Owns everything the agent talks *to*.
 - `models.py` (shared pydantic schemas). **Push this first, by 12:40**, so B and C can import it.
 - `world/datagen.py`: seeded Faker + numpy data.
 - `world/app.py`: FastAPI server, all endpoints, sim clock.
 - `world/scenarios.py`: act1/act2/act3 event scripts and scripted counterparty replies (B counters in act 2).
+- Also built: `/allocation-state`, `/scorecard`, seeded supplier misses, warehouse dispatch, plus `tools/ledger.py` and `tools/baseline.py` (taken over from B).
 
 ### Person B: Solvers
 Owns the deterministic math.
 - `tools/procurement.py` and `tools/reallocation.py`: PuLP models. Develop against mock dicts shaped like `models.py` until the API is live.
-- `tools/ledger.py`: reconciliation state machine + invariant check.
-- `tools/baseline.py`: FCFS baseline + the comparison numbers.
+- ~~`tools/ledger.py`~~ and ~~`tools/baseline.py`~~: done by A. Focus on the two solvers.
+- `run_procurement_optimizer` takes `reliability_override: dict[str, float]` from §7.1.
 
 ### Person C: Agent
 Owns everything the LLM does.
 - `agent/tools.py`: ADK function tools (httpx calls to the World API + solver calls). Stub return values first and swap in real calls at 12:55.
 - `agent/agent.py` + `agent/prompts.py`: ADK `LlmAgent`, system prompt, negotiation round counter, escalation, decision log.
+- `agent/memory.py`: lessons memory and learning loop (§7.1).
 - `run_demo.py`: runs acts 1–3, prints the decision log and the comparison, with a `--scripted` fallback.
 
 ### Timeline
@@ -260,11 +301,12 @@ Owns everything the LLM does.
     ├── tools/
     │   ├── procurement.py      # B
     │   ├── reallocation.py     # B
-    │   ├── ledger.py           # B
-    │   └── baseline.py         # B
+    │   ├── ledger.py           # A (done)
+    │   └── baseline.py         # A (done)
     └── agent/
         ├── tools.py            # C: ADK function tools
         ├── agent.py            # C: LlmAgent + loop
+        ├── memory.py           # C: lessons memory (§7.1)
         └── prompts.py          # C
 ```
 
