@@ -3,21 +3,25 @@
 Run: uv run uvicorn agent_wars_devfest.world.app:app --reload --port 8000
 """
 
+import random
+
 from fastapi import FastAPI, HTTPException
 
 from agent_wars_devfest.models import (
     AdvanceRequest,
     CreatePORequest,
+    DispatchRequest,
     Event,
     LedgerEntry,
     NewLedgerEntry,
     Order,
     PurchaseOrder,
     ReassignRequest,
+    Shipment,
     RescheduleReply,
     RescheduleRequest,
 )
-from agent_wars_devfest.world.datagen import World
+from agent_wars_devfest.world.datagen import SEED, World
 from agent_wars_devfest.world.scenarios import SCENARIOS
 
 app = FastAPI(title="Supply World")
@@ -93,9 +97,27 @@ def _deliver(customer_id: str, qty: float) -> None:
         if o.customer_id == customer_id and o.status == "open":
             take = min(qty, o.qty_t - o.delivered_qty_t)
             o.delivered_qty_t += take
+            world.deliveries.append({"order_id": o.id, "qty_t": take, "day": world.day})
             qty -= take
             if o.delivered_qty_t >= o.qty_t - 1e-6:
                 o.status = "fulfilled"
+    if qty > 1e-6:  # nobody ordered it: refused at the gate and written off
+        world.deliveries.append({"order_id": None, "customer_id": customer_id, "qty_t": qty, "day": world.day})
+
+
+def _maybe_short_ship(po: PurchaseOrder) -> None:
+    """Unreliable suppliers sometimes ship 60%. Seeded per PO, so every run sees the same misses."""
+    sup = world.suppliers[po.supplier_id]
+    if random.Random(f"{SEED}-{po.id}-{po.supplier_id}").random() <= sup.reliability:
+        return
+    short = round(po.qty_t * 0.4, 1)
+    po.cancelled_qty_t = short
+    _ledger("credit", "po", po.id, -short * po.price_per_t, f"{sup.id} short-shipped {short}t")
+    world.fired_events.append(Event(
+        id=world.next_id("E"), day=world.day, type="short_ship",
+        message=f"{sup.name}: sorry, only {po.qty_t - short:g}t of your {po.qty_t:g}t could be loaded today.",
+        payload={"po_id": po.id, "supplier_id": sup.id, "new_qty_t": po.qty_t - short, "short_t": short},
+    ))
 
 
 def _progress_day() -> None:
@@ -103,6 +125,8 @@ def _progress_day() -> None:
     for po in world.purchase_orders.values():
         if po.status == "open" and po.expected_day - 1 <= d:  # 1 day in transit; lead time covers prep
             po.status = "shipped"
+            if po.id in world.live_pos:
+                _maybe_short_ship(po)
         if po.status == "shipped" and po.expected_day <= d:
             po.status = "received"
             po.received_qty_t = po.qty_t - po.cancelled_qty_t
@@ -199,6 +223,7 @@ def create_po(req: CreatePORequest):
     po = PurchaseOrder(id=world.next_id("PO"), supplier_id=s.id, qty_t=req.qty_t, price_per_t=price,
                        order_day=world.day, expected_day=world.day + s.lead_time_days)
     world.purchase_orders[po.id] = po
+    world.live_pos.add(po.id)
     _ledger("po", "po", po.id, req.qty_t * price, f"PO {req.qty_t}t from {s.id} @ {price}/t")
     return po
 
@@ -216,6 +241,31 @@ def cancel_po(po_id: str):
 @app.get("/shipments")
 def shipments():
     return list(world.shipments.values())
+
+
+@app.post("/shipments")
+def dispatch(req: DispatchRequest):
+    truck = _get(world.trucks, req.truck_id, "truck")
+    if any(sh.truck_id == truck.id and sh.status in ("planned", "in_transit") for sh in world.shipments.values()):
+        raise HTTPException(409, f"{truck.id} is already on a shipment")
+    load = sum(s.qty_t for s in req.stops)
+    if load > truck.capacity_t + 1e-6:
+        raise HTTPException(400, f"{load}t exceeds {truck.id} capacity {truck.capacity_t}t")
+    inv = world.inventory
+    if load > inv.qty_t + 1e-6:
+        raise HTTPException(400, f"only {inv.qty_t}t in the warehouse")
+    depart = max(world.day, truck.available_day)
+    for s in req.stops:
+        _get(world.customers, s.customer_id, "customer")
+        earliest = max(world.day + 1, depart + world.travel_days[inv.warehouse_id][s.customer_id])
+        if s.day < earliest:
+            raise HTTPException(400, f"{s.customer_id} can't be reached before day {earliest}")
+    inv.qty_t -= load
+    sh = Shipment(id=world.next_id("SH"), truck_id=truck.id, supplier_id=inv.warehouse_id,
+                  dispatch_day=depart, stops=sorted(req.stops, key=lambda s: s.day))
+    world.shipments[sh.id] = sh
+    truck.available_day = sh.stops[-1].day if sh.stops else depart
+    return sh
 
 
 @app.post("/shipments/{sh_id}/reassign")
@@ -342,6 +392,36 @@ def reschedule(cid: str, req: RescheduleRequest) -> RescheduleReply:
 @app.get("/negotiations")
 def get_negotiations():
     return negotiations
+
+
+UNMET_PENALTY_PER_T = 10_000  # INR per tonne never delivered by an order's latest day
+
+
+@app.get("/scorecard")
+def scorecard():
+    """One yardstick for both the agent and the FCFS baseline (closing slide)."""
+    live = [o for o in world.orders.values() if o.status != "cancelled"]
+    total = sum(o.qty_t for o in live)
+    delivered = sum(o.delivered_qty_t for o in live)
+    by_id = world.orders
+    filled = [(dl, by_id[dl["order_id"]]) for dl in world.deliveries if dl["order_id"]]
+    wasted = sum(dl["qty_t"] for dl in world.deliveries if not dl["order_id"])
+    on_time = sum(dl["qty_t"] for dl, o in filled if dl["day"] <= o.requested_day and o.status != "cancelled")
+    delay_cost = sum(dl["qty_t"] / o.qty_t * o.delay_penalty_per_day * max(0, dl["day"] - o.requested_day)
+                     for dl, o in filled)
+    avg_price = sum(world.price_today(s) for s in world.suppliers) / len(world.suppliers)
+    discount_cost = sum(o.discount_pct / 100 * o.delivered_qty_t * avg_price for o in live)
+    unmet = sum(o.qty_t - o.delivered_qty_t for o in live if o.latest_acceptable_day < world.day)
+    spend = sum(e.amount for e in world.ledger)
+    return {
+        "day": world.day,
+        "fulfillment_rate": round(delivered / total, 3) if total else 1.0,
+        "on_time_rate": round(on_time / total, 3) if total else 1.0,
+        "delivered_t": delivered, "ordered_t": total, "unmet_t": unmet, "wasted_t": wasted,
+        "procurement_spend": round(spend, 2), "delay_cost": round(delay_cost, 2),
+        "discount_cost": round(discount_cost, 2), "unmet_penalty": unmet * UNMET_PENALTY_PER_T,
+        "total_cost": round(spend + delay_cost + discount_cost + unmet * UNMET_PENALTY_PER_T, 2),
+    }
 
 
 @app.get("/ledger")

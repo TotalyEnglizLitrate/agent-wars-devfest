@@ -208,3 +208,51 @@ def test_scenario_reload_resets_state(act):
     assert first["day"] == ok(client.get("/clock"))["day"]
     assert ok(client.get("/negotiations")) == []
     assert all(p["supplier_id"] != "S2" or p["qty_t"] != 10 for p in ok(client.get("/purchase-orders")))
+
+
+# ---------- warehouse dispatch, supplier reliability, scorecard ----------
+
+def test_dispatch_from_warehouse():
+    load("act2")  # 10t in the warehouse, WH1->C1 is 1 day
+    sh = ok(client.post("/shipments", json={"truck_id": "T5", "stops": [{"customer_id": "C1", "qty_t": 10, "day": 2}]}))
+    assert sh["supplier_id"] == "WH1"
+    assert ok(client.get("/inventory"))["qty_t"] == 0
+    advance()
+    o1 = next(o for o in ok(client.get("/orders")) if o["id"] == "O1")
+    assert o1["delivered_qty_t"] == 30  # 20t from T1 + 10t from the warehouse
+
+
+def test_dispatch_rules():
+    load("act2")
+    stop = {"customer_id": "C1", "qty_t": 5, "day": 2}
+    assert client.post("/shipments", json={"truck_id": "T2", "stops": [stop]}).status_code == 409  # busy truck
+    assert client.post("/shipments", json={"truck_id": "T5", "stops": [stop | {"qty_t": 15}]}).status_code == 400  # stock
+    assert client.post("/shipments", json={"truck_id": "T5", "stops": [stop | {"day": 1}]}).status_code == 400  # too soon
+
+
+def test_supplier_misses_are_seeded_and_only_hit_api_pos():
+    def misses():
+        load("act1")
+        for _ in range(4):
+            client.post("/purchase-orders", json={"supplier_id": "S1", "qty_t": 20})
+        advance(3)
+        return [e["payload"]["po_id"] for e in ok(client.get("/events")) if e["type"] == "short_ship"]
+    first = misses()
+    assert first and first == misses()
+    pos = {p["id"]: p for p in ok(client.get("/purchase-orders"))}
+    for po_id in first:
+        assert pos[po_id]["cancelled_qty_t"] == 8 and pos[po_id]["received_qty_t"] == 12
+
+    load("act2")  # scripted POs never miss at random, so the demo script stays exact
+    advance(3)
+    assert [e["type"] for e in ok(client.get("/events"))] == ["short_ship"]
+    assert all(p["cancelled_qty_t"] == 0 for p in ok(client.get("/purchase-orders")))
+
+
+def test_scorecard_counts_waste_and_delay():
+    load("act3")
+    advance(3)  # the in-transit 20t lands at C3 after its order was cancelled
+    s = ok(client.get("/scorecard"))
+    assert s["wasted_t"] == 20
+    assert s["total_cost"] == pytest.approx(s["procurement_spend"] + s["delay_cost"]
+                                            + s["discount_cost"] + s["unmet_penalty"])

@@ -116,6 +116,12 @@ class CreatePORequest(BaseModel):
     price_per_t: float | None = None  # defaults to today's price
 
 
+class DispatchRequest(BaseModel):
+    """Send a free truck out from the warehouse with stock on hand."""
+    truck_id: str
+    stops: list[Stop]
+
+
 class ReassignRequest(BaseModel):
     stops: list[Stop]
     truck_id: str | None = None
