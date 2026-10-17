@@ -154,8 +154,10 @@ def run_procurement_optimizer() -> dict:
     """
     sups = _client.get("/suppliers").json()
     hist = {s["id"]: _client.get(f"/suppliers/{s['id']}/prices", params={"days": 14}).json() for s in sups}
-    override = memory.observed_reliability(memory.load(), sups)
-    plan = solvers.procure(sups, hist, _state_with_open_pos(), override)
+    mem = memory.load()
+    override = memory.observed_reliability(mem, sups)
+    plan = solvers.procure(sups, hist, _state_with_open_pos(), override, memory.raw_reliability(mem),
+                           _client.get("/travel-days").json())
     return plan | ({"reliability_used": override} if override else {})
 
 

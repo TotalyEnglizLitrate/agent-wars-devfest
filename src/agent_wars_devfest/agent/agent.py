@@ -13,11 +13,15 @@ def build_instruction(ctx=None) -> str:
 
 def build_agent():
     from google.adk.agents import LlmAgent
+    from google.adk.models.google_llm import Gemini
+    from google.genai import types
 
-    kwargs = {"model": os.environ["AGENT_MODEL"]} if os.environ.get("AGENT_MODEL") else {}  # else ADK default
-    return LlmAgent(name="supply_coordinator", instruction=build_instruction, tools=tools.ALL_TOOLS,
-                    description="Buys sugar, re-plans deliveries, negotiates delays, reconciles the books.",
-                    **kwargs)
+    name = os.environ.get("AGENT_MODEL") or LlmAgent._default_model  # ADK's built-in default
+    # Free tier allows ~5 requests/min and every tool call is a request: back off on 429 instead of failing.
+    model = Gemini(model=name, retry_options=types.HttpRetryOptions(
+        attempts=8, initial_delay=13, max_delay=65, http_status_codes=[429, 503]))
+    return LlmAgent(name="supply_coordinator", model=model, instruction=build_instruction, tools=tools.ALL_TOOLS,
+                    description="Buys sugar, re-plans deliveries, negotiates delays, reconciles the books.")
 
 
 class LlmRunner:

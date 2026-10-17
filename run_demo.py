@@ -25,14 +25,23 @@ def _fmt(s: dict) -> str:
             f"wasted {s['wasted_t']:g}t | total ₹{s['total_cost']:,.0f}")
 
 
-async def run_act(act: str, use_llm: bool, client) -> dict:
+def eventful(client, day: int) -> bool:
+    """Spend LLM calls where judgment matters: days with new events or open issues."""
+    events = [e for e in client.get("/events", params={"since": day}).json() if e["day"] == day]
+    return bool(events or client.get("/allocation-state").json()["issues"])
+
+
+async def run_act(act: str, use_llm: bool, client, llm_every_day: bool = False) -> dict:
     loaded = tools.load_scenario(act)
     print(f"\n━━━ {act} (starts day {loaded['day']}) ━━━")
     runner = LlmRunner(act) if use_llm else None
     day = loaded["day"]
     while True:
         try:
-            summary = await runner.tick(day) if runner else scripted_tick()
+            if runner and (llm_every_day or eventful(client, day)):
+                summary = "🤖 " + await runner.tick(day)
+            else:
+                summary = scripted_tick()
         except Exception as e:  # keep the demo alive if the LLM call fails
             print(f"  ! LLM turn failed ({type(e).__name__}: {e}); falling back to the scripted turn")
             summary = scripted_tick()
@@ -54,6 +63,7 @@ async def main() -> None:
     ap.add_argument("--reset-memory", action="store_true")
     ap.add_argument("--url", help="World API URL; default runs the world in-process")
     ap.add_argument("--verbose", action="store_true", help="print every tool call")
+    ap.add_argument("--llm-every-day", action="store_true", help="use the LLM on quiet days too (slow on free tier)")
     args = ap.parse_args()
 
     if args.verbose:
@@ -80,7 +90,7 @@ async def main() -> None:
         for run in range(1, args.runs + 1):
             if args.runs > 1:
                 print(f"\n(run {run} of {args.runs})")
-            results[(act, run)] = await run_act(act, use_llm, client)
+            results[(act, run)] = await run_act(act, use_llm, client, args.llm_every_day)
 
     print("\n━━━ Decision log (last act) ━━━")
     for d in tools.decision_log:

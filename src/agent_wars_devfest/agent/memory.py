@@ -52,6 +52,11 @@ def observed_reliability(mem: dict, suppliers: list[dict]) -> dict[str, float]:
     return out
 
 
+def raw_reliability(mem: dict) -> dict[str, float]:
+    """Plain observed on-time rate, for solvers that do their own blending (B's LP)."""
+    return {sid: round((st["n"] - st["misses"]) / st["n"], 3) for sid, st in mem["supplier_stats"].items() if st["n"]}
+
+
 def extract_lessons(report: dict, mem: dict) -> dict:
     """Pure: fold one run's report into memory and rebuild the lesson texts. Returns the new memory."""
     mem = json.loads(json.dumps(mem))  # deep copy
