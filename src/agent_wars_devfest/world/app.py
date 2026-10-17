@@ -236,6 +236,75 @@ def reassign(sh_id: str, req: ReassignRequest):
     return sh
 
 
+@app.get("/allocation-state")
+def allocation_state():
+    """Everything the reallocation optimizer needs, precomputed.
+
+    Stops must land on day >= today + 1: deliveries are processed when the clock advances.
+    """
+    d, t, wh = world.day, world.travel_days, world.inventory.warehouse_id
+    active = [sh for sh in world.shipments.values() if sh.status in ("planned", "in_transit")]
+    pending = {sh.id: [s for s in sh.stops if sh.status == "planned" or s.day > d] for sh in active}
+
+    # Pending stop qty per customer, allocated to that customer's open orders earliest-first.
+    incoming: dict[str, list[tuple[float, int]]] = {}
+    for sh in active:
+        for s in pending[sh.id]:
+            incoming.setdefault(s.customer_id, []).append((s.qty_t, s.day))
+    demand, issues = [], []
+    open_orders = sorted((o for o in world.orders.values() if o.status == "open"), key=lambda o: o.requested_day)
+    for o in open_orders:
+        remaining = o.qty_t - o.delivered_qty_t
+        committed, late_t = 0.0, 0.0
+        queue = incoming.get(o.customer_id, [])
+        while queue and committed < remaining - 1e-6:
+            qty, day = queue.pop(0)
+            take = min(qty, remaining - committed)
+            committed += take
+            if day > o.latest_acceptable_day:
+                late_t += take
+            if qty > take:
+                queue.insert(0, (qty - take, day))
+        demand.append(o.model_dump() | {"remaining_t": remaining, "committed_t": committed,
+                                        "uncovered_t": remaining - committed})
+        if remaining - committed > 1e-6 and o.earliest_day <= d + 2:  # only urgent gaps; later ones get bought for
+            issues.append(f"{o.id} ({o.customer_id}) is short {remaining - committed:g}t "
+                          f"(needs {remaining:g}t by day {o.latest_acceptable_day})")
+        if late_t:
+            issues.append(f"{o.id} ({o.customer_id}): {late_t:g}t arrives after day {o.latest_acceptable_day}")
+    for cid, queue in incoming.items():
+        if queue:
+            surplus = sum(q for q, _ in queue)
+            issues.append(f"{surplus:g}t heading to {cid} has no open order to fill (cancelled or over-delivered)")
+
+    def reach(origin: str, ready: int) -> dict[str, int]:
+        return {c: max(d + 1, ready + t[origin][c]) for c in world.customers}
+
+    shipments_out = []
+    for sh in active:
+        arrival = reach(sh.supplier_id, sh.dispatch_day)
+        for s in pending[sh.id]:
+            arrival[s.customer_id] = s.day  # already-planned legs keep their day
+        shipments_out.append({"shipment_id": sh.id, "truck_id": sh.truck_id, "supplier_id": sh.supplier_id,
+                              "status": sh.status, "qty_t": sum(s.qty_t for s in pending[sh.id]),
+                              "capacity_t": world.trucks[sh.truck_id].capacity_t,
+                              "stops": pending[sh.id], "arrival_day_by_customer": arrival})
+    busy = {sh.truck_id for sh in active}
+    free_trucks = [tr.model_dump() | {"arrival_day_by_customer": reach(wh, max(d, tr.available_day))}
+                   for tr in world.trucks.values() if tr.id not in busy]
+    warehouse_incoming = [{"po_id": po.id, "qty_t": po.qty_t - po.cancelled_qty_t, "day": po.expected_day}
+                          for po in world.purchase_orders.values()
+                          if po.status in ("open", "shipped") and not po.shipment_ids]
+    return {
+        "day": d,
+        "demand": demand,
+        "shipments": shipments_out,
+        "warehouse": world.inventory.model_dump() | {"incoming": warehouse_incoming},
+        "free_trucks": free_trucks,
+        "issues": issues,
+    }
+
+
 @app.get("/events")
 def events(since: int = 0):
     return [e for e in world.fired_events if e.day >= since]

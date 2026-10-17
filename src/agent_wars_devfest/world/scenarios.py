@@ -54,6 +54,11 @@ def _shipment(w: World, truck: str, sid: str, dispatch: int, stops: list[tuple[s
     return sh
 
 
+def _set_travel(w: World, a: str, b: str, days: int) -> None:
+    """Pin a leg so hand-written stop days agree with the travel matrix."""
+    w.travel_days[a][b] = w.travel_days[b][a] = days
+
+
 def _event(w: World, day: int, type_: str, message: str, **payload) -> Event:
     e = Event(id=w.next_id("E"), day=day, type=type_, message=message, payload=payload)
     w.scheduled_events.append(e)
@@ -81,6 +86,8 @@ def act2() -> World:
     w = generate_base_world()
     w.scenario, w.day = "act2", 1
     w.inventory.qty_t = 10
+    for a, b in [("S1", "C1"), ("S1", "C2"), ("WH1", "C1"), ("WH1", "C2")]:
+        _set_travel(w, a, b, 1)  # truck 2 must be divertible to Factory A on day 3
     a = _order(w, "C1", 30, 2, slack=1, penalty=5_000, priority=1)  # Factory A: 30t on day 2
     b = _order(w, "C2", 20, 3, slack=2, penalty=2_000)              # Factory B: 20t on day 3
     _order(w, "C3", 20, 5)
@@ -110,6 +117,7 @@ def act3() -> World:
     w = generate_base_world()
     w.scenario, w.day = "act3", 2
     w.inventory.qty_t = 30
+    _set_travel(w, "S2", "C1", 1)
     _order(w, "C1", 20, 3)
     c3 = _order(w, "C3", 25, 4, penalty=1_500)
     _order(w, "C4", 20, 4, slack=2, penalty=3_000, priority=1)  # no truck assigned yet
