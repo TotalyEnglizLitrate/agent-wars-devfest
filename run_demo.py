@@ -1,7 +1,7 @@
 """Run the three demo acts with the agent, then compare against the FCFS baseline.
 
   uv run python run_demo.py --scripted               # no LLM needed, deterministic
-  uv run python run_demo.py                          # Gemini via ADK (needs GOOGLE_API_KEY)
+  uv run python run_demo.py                          # Gemini via ADK (GOOGLE_API_KEY from .env)
   uv run python run_demo.py --acts act1 --runs 2 --reset-memory --scripted   # learning demo
   uv run python run_demo.py --url http://localhost:8000                      # against a live server
 """
@@ -11,9 +11,13 @@ import asyncio
 import os
 import sys
 
-from agent_wars_devfest.agent import memory, tools
-from agent_wars_devfest.agent.agent import LlmRunner, scripted_tick
-from agent_wars_devfest.tools.baseline import END_DAY, run_fcfs
+from dotenv import load_dotenv
+
+load_dotenv()  # GOOGLE_API_KEY etc. from .env (gitignored)
+
+from agent_wars_devfest.agent import memory, tools  # noqa: E402
+from agent_wars_devfest.agent.agent import LlmRunner, scripted_tick  # noqa: E402
+from agent_wars_devfest.tools.baseline import END_DAY, run_fcfs  # noqa: E402
 
 
 def _fmt(s: dict) -> str:
