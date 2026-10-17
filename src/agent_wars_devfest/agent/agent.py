@@ -5,6 +5,8 @@ import os
 from agent_wars_devfest.agent import memory, tools
 from agent_wars_devfest.agent.prompts import BASE_PROMPT
 
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
+
 
 def build_instruction(ctx=None) -> str:
     """ADK InstructionProvider: re-read lessons on every turn so new ones apply immediately."""
@@ -16,10 +18,11 @@ def build_agent():
     from google.adk.models.google_llm import Gemini
     from google.genai import types
 
-    name = os.environ.get("AGENT_MODEL") or LlmAgent._default_model  # ADK's built-in default
-    # Free tier allows ~5 requests/min and every tool call is a request: back off on 429 instead of failing.
-    model = Gemini(model=name, retry_options=types.HttpRetryOptions(
-        attempts=8, initial_delay=13, max_delay=65, http_status_codes=[429, 503]))
+    # flash-lite: probed on the free tier at 10/10 tool-calling requests in 11s with no 429s, where
+    # gemini-3.5/3.6-flash allow 5 requests/min. Override with AGENT_MODEL.
+    name = os.environ.get("AGENT_MODEL") or DEFAULT_MODEL
+    model = Gemini(model=name, retry_options=types.HttpRetryOptions(  # back off on rate limits / overload
+        attempts=6, initial_delay=2, max_delay=60, http_status_codes=[429, 503]))
     return LlmAgent(name="supply_coordinator", model=model, instruction=build_instruction, tools=tools.ALL_TOOLS,
                     description="Buys sugar, re-plans deliveries, negotiates delays, reconciles the books.")
 

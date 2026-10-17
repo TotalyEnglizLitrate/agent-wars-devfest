@@ -23,7 +23,7 @@ uv sync
 echo "GOOGLE_API_KEY=your-key" > .env      # gitignored; only needed for the LLM agent
 
 uv run python run_demo.py --scripted       # all three acts, deterministic, no LLM
-uv run python run_demo.py                  # Gemini drives the eventful days
+uv run python run_demo.py                  # Gemini (3.5-flash-lite) drives the eventful days
 uv run pytest                              # 64 tests
 ```
 
@@ -149,10 +149,11 @@ Lessons are re-read into the ADK instruction on every turn. They're stored in `.
 
 ## Known limitations
 
-- **The LLM mode is wired up but hasn't been run end to end on a paid key.**
-  - On the free tier (5 requests/min), every tool call is a request, so a single act takes many minutes.
-  - The agent retries on 429 and uses the LLM only on days with events or issues.
-  - If a turn still fails, that day falls back to the scripted turn, so the demo always completes.
+- **The LLM runs on `gemini-3.5-flash-lite` by default.**
+  - On the free tier, `gemini-3.5-flash` / `3.6-flash` allow only 5 requests per minute, and every tool call is a request. Flash-lite answered 10/10 tool-calling requests in 11s without hitting the limit.
+  - Act 2 ran live end to end on it: Gemini negotiated Factory B's 5% counter on its own, committed, reconciled, and matched the scripted result (saves ₹2.3L).
+  - Set `AGENT_MODEL` in `.env` to use another model.
+  - The agent retries on 429/503 and uses the LLM only on days with events or issues. If a turn still fails, that day falls back to the scripted turn.
 - **The adapter works around gaps in B's reallocation MIP:**
   - Its objective charges every unmet tonne the same and only charges delay when a delivery happens, so in one big solve it starves overdue orders. The adapter solves it one priority and due-day tier at a time.
   - It only plans free trucks from the warehouse, so re-routing in-transit loads and asking for delays happen in the adapter.
