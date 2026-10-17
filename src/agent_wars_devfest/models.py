@@ -136,11 +136,3 @@ class RescheduleReply(BaseModel):
     decision: Literal["accept", "reject", "counter"]
     discount_pct: float = 0.0  # set when decision == "counter"
     message: str = ""
-
-
-class NewLedgerEntry(BaseModel):
-    ref_type: str
-    ref_id: str
-    kind: Literal["po", "receipt", "credit", "fee", "refund"]
-    amount: float
-    note: str = ""

@@ -181,13 +181,6 @@ def test_act3_allocation_state_flags_orphan_and_waiting_order():
     assert orphan["arrival_day_by_customer"]["C4"] <= 6  # can be rerouted inside C4's window
 
 
-def test_ledger_post_for_reconcile():
-    load("act3")
-    e = ok(client.post("/ledger", json={"ref_type": "order", "ref_id": "O2", "kind": "fee",
-                                        "amount": -1000, "note": "10% cancellation fee"}))
-    assert ok(client.get("/ledger"))[-1]["id"] == e["id"]
-
-
 # ---------- scenario consistency ----------
 
 @pytest.mark.parametrize("act", ["act1", "act2", "act3"])

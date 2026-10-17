@@ -13,7 +13,6 @@ from agent_wars_devfest.models import (
     DispatchRequest,
     Event,
     LedgerEntry,
-    NewLedgerEntry,
     Order,
     PurchaseOrder,
     ReassignRequest,
@@ -21,6 +20,7 @@ from agent_wars_devfest.models import (
     RescheduleReply,
     RescheduleRequest,
 )
+from agent_wars_devfest.tools import ledger as books
 from agent_wars_devfest.world.datagen import SEED, World
 from agent_wars_devfest.world.scenarios import SCENARIOS
 
@@ -274,16 +274,21 @@ def reassign(sh_id: str, req: ReassignRequest):
     if sh.status in ("delivered", "cancelled"):
         raise HTTPException(409, f"{sh_id} is {sh.status}")
     truck = _get(world.trucks, req.truck_id or sh.truck_id, "truck")
+    # Only undelivered stops can change; delivered ones stay as the record of what shipped.
+    done = [s for s in sh.stops if sh.status == "in_transit" and s.day <= world.day]
+    on_board = sum(s.qty_t for s in sh.stops) - sum(s.qty_t for s in done)
     load = sum(s.qty_t for s in req.stops)
-    if load > truck.capacity_t + 1e-6:
-        raise HTTPException(400, f"{load}t exceeds {truck.id} capacity {truck.capacity_t}t")
+    if load > min(on_board, truck.capacity_t) + 1e-6:
+        raise HTTPException(400, f"{load}t requested but only {on_board:g}t is on {sh_id}")
     for s in req.stops:
         _get(world.customers, s.customer_id, "customer")
-        if s.day < world.day:
-            raise HTTPException(400, f"stop day {s.day} is in the past (today is {world.day})")
-    sh.truck_id, sh.stops = truck.id, sorted(req.stops, key=lambda s: s.day)
+        if s.day <= world.day:
+            raise HTTPException(400, f"stop day {s.day} must be after today (day {world.day})")
+    leftover = on_board - load
+    world.inventory.qty_t += leftover  # whatever isn't dropped goes back to the warehouse
+    sh.truck_id, sh.stops = truck.id, done + sorted(req.stops, key=lambda s: s.day)
     truck.available_day = max((s.day for s in sh.stops), default=world.day)
-    return sh
+    return sh.model_dump() | {"returned_to_warehouse_t": leftover}
 
 
 @app.get("/allocation-state")
@@ -429,10 +434,15 @@ def ledger():
     return world.ledger
 
 
-@app.post("/ledger")
-def add_ledger_entry(req: NewLedgerEntry):
-    """For tools/ledger.py `reconcile` only. The agent never calls this directly."""
-    return _ledger(req.kind, req.ref_type, req.ref_id, req.amount, req.note)
+@app.post("/reconcile")
+def reconcile():
+    """Fix POs + ledger to match what physically happened; returns actions, follow-ups, invariants."""
+    return books.reconcile(world)
+
+
+@app.get("/ledger/invariants")
+def ledger_invariants():
+    return books.check_invariants(world)
 
 
 _load("act2")  # default scenario on startup
