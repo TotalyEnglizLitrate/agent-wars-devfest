@@ -77,6 +77,7 @@ class PurchaseOrder(BaseModel):
     received_qty_t: float = 0.0
     cancelled_qty_t: float = 0.0
     shipment_ids: list[str] = []  # non-empty = shipped direct to customers, bypassing the warehouse
+    placed_by: Literal["scenario", "api"] = "scenario"
 
 
 class LedgerEntry(BaseModel):

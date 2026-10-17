@@ -247,7 +247,7 @@ def test_scorecard_counts_waste_and_delay():
     advance(3)  # the in-transit 20t lands at C3 after its order was cancelled
     s = ok(client.get("/scorecard"))
     assert s["wasted_t"] == 20
-    assert s["total_cost"] == pytest.approx(s["procurement_spend"] + s["delay_cost"]
+    assert s["total_cost"] == pytest.approx(s["procurement_spend"] + s["delay_cost"] + s["holding_cost"]
                                             + s["discount_cost"] + s["unmet_penalty"])
 
 

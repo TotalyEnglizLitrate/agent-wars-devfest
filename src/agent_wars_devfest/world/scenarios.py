@@ -89,7 +89,7 @@ def act2() -> World:
     for a, b in [("S1", "C1"), ("S1", "C2"), ("WH1", "C1"), ("WH1", "C2")]:
         _set_travel(w, a, b, 1)  # truck 2 must be divertible to Factory A on day 3
     a = _order(w, "C1", 30, 2, slack=1, penalty=5_000, priority=1)  # Factory A: 30t on day 2
-    b = _order(w, "C2", 20, 3, slack=2, penalty=2_000)              # Factory B: 20t on day 3
+    b = _order(w, "C2", 20, 3, slack=0, penalty=2_000)              # Factory B: 20t on day 3, no slack: a delay needs consent
     _order(w, "C3", 20, 5)
     _order(w, "C4", 15, 6)
 

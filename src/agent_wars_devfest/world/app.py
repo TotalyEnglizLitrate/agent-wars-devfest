@@ -122,6 +122,7 @@ def _maybe_short_ship(po: PurchaseOrder) -> None:
 
 def _progress_day() -> None:
     d = world.day
+    world.holding_cost += world.inventory.qty_t * world.inventory.holding_cost_per_t_day  # stock held overnight
     for po in world.purchase_orders.values():
         if po.status == "open" and po.expected_day - 1 <= d:  # 1 day in transit; lead time covers prep
             po.status = "shipped"
@@ -221,7 +222,7 @@ def create_po(req: CreatePORequest):
         raise HTTPException(400, f"qty must be in (0, {s.capacity_t_per_day * 3}]")
     price = world.price_today(s.id)
     po = PurchaseOrder(id=world.next_id("PO"), supplier_id=s.id, qty_t=req.qty_t, price_per_t=price,
-                       order_day=world.day, expected_day=world.day + s.lead_time_days)
+                       order_day=world.day, expected_day=world.day + s.lead_time_days, placed_by="api")
     world.purchase_orders[po.id] = po
     world.live_pos.add(po.id)
     _ledger("po", "po", po.id, req.qty_t * price, f"PO {req.qty_t}t from {s.id} @ {price}/t")
@@ -375,7 +376,10 @@ def reschedule(cid: str, req: RescheduleRequest) -> RescheduleReply:
     queue = world.scripted_replies.get(cid, [])
     last_counter = next((n["reply"]["discount_pct"] for n in reversed(negotiations)
                          if n["customer_id"] == cid and n["reply"]["decision"] == "counter"), 0)
-    if queue:
+    if queue and queue[0].decision == "counter" and req.discount_pct + 1e-6 >= queue[0].discount_pct:
+        queue.pop(0)  # our offer already meets their scripted ask
+        reply = RescheduleReply(decision="accept", message=f"Day {req.new_day} at {req.discount_pct:g}% off works.")
+    elif queue:
         reply = queue.pop(0)
     elif req.new_day > order.latest_acceptable_day + 2:
         reply = RescheduleReply(decision="reject", message="That's far too late for our production run.")
@@ -418,14 +422,16 @@ def scorecard():
     discount_cost = sum(o.discount_pct / 100 * o.delivered_qty_t * avg_price for o in live)
     unmet = sum(o.qty_t - o.delivered_qty_t for o in live if o.latest_acceptable_day < world.day)
     spend = sum(e.amount for e in world.ledger)
+    holding = world.holding_cost
     return {
         "day": world.day,
         "fulfillment_rate": round(delivered / total, 3) if total else 1.0,
         "on_time_rate": round(on_time / total, 3) if total else 1.0,
         "delivered_t": delivered, "ordered_t": total, "unmet_t": unmet, "wasted_t": wasted,
         "procurement_spend": round(spend, 2), "delay_cost": round(delay_cost, 2),
-        "discount_cost": round(discount_cost, 2), "unmet_penalty": unmet * UNMET_PENALTY_PER_T,
-        "total_cost": round(spend + delay_cost + discount_cost + unmet * UNMET_PENALTY_PER_T, 2),
+        "discount_cost": round(discount_cost, 2), "holding_cost": round(holding, 2),
+        "unmet_penalty": unmet * UNMET_PENALTY_PER_T,
+        "total_cost": round(spend + delay_cost + discount_cost + holding + unmet * UNMET_PENALTY_PER_T, 2),
     }
 
 

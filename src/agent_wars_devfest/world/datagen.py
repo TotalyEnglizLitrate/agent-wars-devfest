@@ -57,6 +57,7 @@ class World:
     # customer_id -> queue of scripted replies; consumed in order, then default policy applies
     scripted_replies: dict[str, list[RescheduleReply]] = field(default_factory=dict)
     counters: dict[str, int] = field(default_factory=dict)
+    holding_cost: float = 0.0  # accrued on warehouse stock each simulated day
     deliveries: list[dict] = field(default_factory=list)  # {order_id, qty_t, day}, for the scorecard
     live_pos: set[str] = field(default_factory=set)  # POs placed via the API; subject to supplier reliability
 

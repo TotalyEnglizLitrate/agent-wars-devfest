@@ -250,13 +250,13 @@ Owns everything the agent talks *to*.
 - Also built: `/allocation-state`, `/scorecard`, seeded supplier misses, warehouse dispatch, plus `tools/ledger.py` and `tools/baseline.py` (taken over from B).
 
 ### Person B: Solvers
-Owns the deterministic math.
+Owns the deterministic math. **The agent's interface is fixed in the `agent/solvers.py` docstring**: expose `solve(...)` in `tools/reallocation.py` / `tools/procurement.py` with those signatures and the agent picks them up automatically. Until then, a greedy fallback runs and its output carries `"solver": "greedy-fallback"`.
 - `tools/procurement.py` and `tools/reallocation.py`: PuLP models. Develop against mock dicts shaped like `models.py` until the API is live.
 - ~~`tools/ledger.py`~~ and ~~`tools/baseline.py`~~: done by A. Focus on the two solvers.
 - `run_procurement_optimizer` takes `reliability_override: dict[str, float]` from §7.1.
 
-### Person C: Agent
-Owns everything the LLM does.
+### Person C: Agent ✅ built (taken over by A; `uv run python run_demo.py --scripted`)
+Owns everything the LLM does. LLM mode needs `GOOGLE_API_KEY` and hasn't been run live yet. Without a key, `run_demo.py` falls back to the scripted agent automatically.
 - `agent/tools.py`: ADK function tools (httpx calls to the World API + solver calls). Stub return values first and swap in real calls at 12:55.
 - `agent/agent.py` + `agent/prompts.py`: ADK `LlmAgent`, system prompt, negotiation round counter, escalation, decision log.
 - `agent/memory.py`: lessons memory and learning loop (§7.1).
