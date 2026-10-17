@@ -256,3 +256,26 @@ def test_scorecard_counts_waste_and_delay():
     assert s["wasted_t"] == 20
     assert s["total_cost"] == pytest.approx(s["procurement_spend"] + s["delay_cost"]
                                             + s["discount_cost"] + s["unmet_penalty"])
+
+
+# ---------- input validation (the agent must not be able to invent stock, prices or money) ----------
+
+@pytest.mark.parametrize("method,url,body", [
+    ("post", "/shipments", {"truck_id": "T5", "stops": [{"customer_id": "C1", "qty_t": -500, "day": 2}]}),
+    ("post", "/shipments", {"truck_id": "T5", "stops": []}),
+    ("post", "/shipments/SH2/reassign", {"stops": [{"customer_id": "C1", "qty_t": -5, "day": 3}]}),
+    ("post", "/purchase-orders", {"supplier_id": "S2", "qty_t": -10}),
+    ("post", "/customers/C2/reschedule-request", {"order_id": "O2", "new_day": 4, "discount_pct": -50}),
+    ("post", "/clock/advance", {"days": -5}),
+])
+def test_rejects_invalid_input(method, url, body):
+    load("act2")
+    assert getattr(client, method)(url, json=body).status_code == 422
+    assert ok(client.get("/inventory"))["qty_t"] == 10
+
+
+def test_po_price_cannot_be_chosen_by_caller():
+    load("act2")
+    po = ok(client.post("/purchase-orders", json={"supplier_id": "S2", "qty_t": 10, "price_per_t": 1}))
+    today = next(s["price_today"] for s in ok(client.get("/suppliers")) if s["id"] == "S2")
+    assert po["price_per_t"] == today

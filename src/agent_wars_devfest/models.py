@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Supplier(BaseModel):
@@ -53,8 +53,8 @@ class Truck(BaseModel):
 
 class Stop(BaseModel):
     customer_id: str
-    qty_t: float
-    day: int
+    qty_t: float = Field(gt=0)
+    day: int = Field(ge=0)
 
 
 class Shipment(BaseModel):
@@ -107,19 +107,18 @@ class Event(BaseModel):
 # ---- request / response bodies ----
 
 class AdvanceRequest(BaseModel):
-    days: int = 1
+    days: int = Field(default=1, ge=1, le=30)
 
 
 class CreatePORequest(BaseModel):
     supplier_id: str
-    qty_t: float
-    price_per_t: float | None = None  # defaults to today's price
+    qty_t: float = Field(gt=0)  # always bought at the supplier's price today
 
 
 class DispatchRequest(BaseModel):
     """Send a free truck out from the warehouse with stock on hand."""
     truck_id: str
-    stops: list[Stop]
+    stops: list[Stop] = Field(min_length=1)
 
 
 class ReassignRequest(BaseModel):
@@ -129,8 +128,8 @@ class ReassignRequest(BaseModel):
 
 class RescheduleRequest(BaseModel):
     order_id: str
-    new_day: int
-    discount_pct: float = 0.0  # discount we offer in exchange for the delay
+    new_day: int = Field(ge=0)
+    discount_pct: float = Field(default=0.0, ge=0, le=50)  # discount we offer in exchange for the delay
 
 
 class RescheduleReply(BaseModel):

@@ -219,7 +219,7 @@ def create_po(req: CreatePORequest):
     s = _get(world.suppliers, req.supplier_id, "supplier")
     if req.qty_t <= 0 or req.qty_t > s.capacity_t_per_day * 3:
         raise HTTPException(400, f"qty must be in (0, {s.capacity_t_per_day * 3}]")
-    price = req.price_per_t or world.price_today(s.id)
+    price = world.price_today(s.id)
     po = PurchaseOrder(id=world.next_id("PO"), supplier_id=s.id, qty_t=req.qty_t, price_per_t=price,
                        order_day=world.day, expected_day=world.day + s.lead_time_days)
     world.purchase_orders[po.id] = po
