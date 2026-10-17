@@ -1,7 +1,7 @@
 [project]
 name = "agent-wars-devfest"
 version = "0.1.0"
-description = "Add your description here"
+description = "Autonomous supply coordinator: an ADK + Gemini agent over LP/MIP solvers for procurement, delivery re-planning and negotiation"
 readme = "README.md"
 authors = [
     { name = "Narendra S", email = "narendra.s1232@gmail.com" },
